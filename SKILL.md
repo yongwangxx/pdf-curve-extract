@@ -7,7 +7,7 @@ description: Extract and review plotted coordinates from scientific PDF figures 
 
 Recover the coordinates represented by a published figure at a defensible precision, and retain the evidence needed to evaluate them. Distinguish original numerical data, digitized graphic coordinates, and processed or fitted results throughout the work.
 
-The supplied `extract_curves.py` implements vector-stroke extraction. Raster digitization, marker identification, and scientific review require separate work. See [README.md](README.md) for the command-line interface, configuration, and generated files.
+The supplied `extract_curves.py` extracts vector strokes. `extract_markers.py` recovers centers of explicitly selected, geometrically checked PDF markers and optionally paired vertical error-bar caps. `extract_raster.py` exports visible colored pixel coordinates with ambiguity and exclusion masks. Selection and scientific review remain separate responsibilities. See [README.md](README.md) for the interfaces, configurations, and generated files.
 
 ## Select and identify the source
 
@@ -37,6 +37,8 @@ log(v(p)) = log(v0) + (p - p0) / (p1 - p0) * (log(v1) - log(v0)).
 
 Apply the logarithm before interpolation and exponentiate afterward. This applies independently to x and y, including the reversed coordinate direction for y. The logarithm base does not change the mapping when used consistently. Record calibration anchors and check residuals at other ticks; a log-like tick pattern alone is insufficient.
 
+The utilities accept two explicit tick anchors instead of panel-edge limits and can report residuals at independent check ticks. Do not use a small residual as proof that the right tick labels or units were chosen. Retain a superseded extraction when correcting a calibration and compare the affected coordinates.
+
 ## Extract vector geometry
 
 Inspect the drawing inventory and render the panel before selecting paths. Use color, stroke style, geometry, and path identity together. Legends, arrows, and colored text can share a curve's color; exclude or identify them explicitly. Filled outlines often represent text or markers, but stroked paths can also contain annotations.
@@ -47,15 +49,18 @@ Do not pool every same-colored path and sort the result by x. That can merge dif
 
 Markers need their centers identified independently of connecting lines and error bars. If a marker is hidden, leave it unresolved rather than copying a value from another series or a cross-series mean. A shared x grid does not imply a shared y value.
 
+For supported square, circle, and cross markers, use the marker helper with reviewed path IDs. Compute centers in PDF space before applying a logarithmic transform. Explicitly pair error-bar caps with each marker; never associate them merely because their color matches. Stop on partial clipping or unsupported geometry rather than estimating an invisible center.
+
 The utility exports stroke geometry, not a determination that every selected path represents data. Inspect both the overlay and extracted-only view before accepting the output.
 
 ## Digitize raster figures
 
-This is a manual workflow, not an implemented mode of the vector utility.
+The raster helper supports color-separated visible-pixel extraction. It does not recover hidden trajectories, detect arbitrary curve identities, or turn a dense pixel band into a time series. The following choices still require review.
 
 - Keep the native image and record the crop, calibration, and image checksum. Inspect the resolution, compression, antialiasing, and line thickness before choosing the reporting precision.
 - For color segmentation, choose a color model and tolerance suited to the actual image. Inspect the mask itself. A universal RGB threshold is unreliable near dark text, antialiased edges, or compressed color boundaries.
 - Exclude legends, labels, arrows, frame lines, insets, and other decorations before tracing. Save the exclusion regions and diagnostic mask.
+- Inspect the pixels removed by each exclusion as well as the retained pixels. An annotation rectangle can cut off nearby curve tips even when the overall trend still looks correct. Use the exclusion-audit image and removal counts to refine it, preserving the earlier extraction as evidence of the correction.
 - A column-wise center estimate is appropriate only where one identifiable, locally single-valued trace occupies the column. It can fail at steep slopes, loops, crossings, error bars, and thick or noisy bundles. Use connected components or local tracing only where the identity remains supported by visible pixels.
 - Separate marker centers and error-bar endpoints. Symmetric error bars are not automatically harmless: clipping, overlap, and marker geometry can bias a pixel median. Do not truncate a trace merely to suppress an unexplained artifact.
 - Preserve gaps and ambiguous intervals. Bridging, despiking, or smoothing must be an explicit later operation, with the affected points and parameters retained. Compare before and after; a filter can remove a genuine peak or discontinuity.
@@ -85,6 +90,8 @@ An overlay checks geometric agreement, not the correctness of the scientific int
 2. **Identity and quantities.** Verify series assignments, units, conditions, and normalization against the paper. Compare independently selected positions across the domain and any consequential reported peaks, plateaus, ratios, integrals, or widths. A numeric match is useful only when it refers to the same quantity and conditions. Record discrepancies rather than forcing agreement.
 3. **Precision and limits.** Estimate how calibration, line width, raster resolution, and ambiguous tracing affect the quantities being reported. Vary plausible tick or tracing choices when that uncertainty matters. Do not claim a global error bound from a few spot checks. Set acceptance criteria for the intended scientific use; no fixed number of matching points makes every figure valid.
 4. **Final rendering.** Check the actual exported figure, not only an intermediate plot. Confirm its data input, transformations, scales, units, legend, uncertainty labels, and caption. Check for clipped endpoints, unintended interpolation, missing symbols, and resampled raster detail. Reopen vector and raster exports at the intended size. A side-by-side comparison helps assess presentation but does not replace a calibrated overlay.
+
+The utilities provide the original on the left and the new plot on the right in a separate comparison image. Use that layout for visual presentation and retain the overlay for alignment checks. Preview resizing does not add information to the source or increase the precision of the extracted coordinates.
 
 A review record should state what was inspected, the numerical comparisons and tolerances, unresolved intervals, and the permitted interpretation of the result. Distinguish a quantitatively accepted extraction from an approximate trend reconstruction or a result still needing review. An automatically generated manifest is not a completed review.
 

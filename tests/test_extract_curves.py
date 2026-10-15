@@ -5,13 +5,16 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 import fitz
 from PIL import Image
 
-SPEC = importlib.util.spec_from_file_location("extract_curves", Path(__file__).resolve().parents[1] / "extract_curves.py")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+SPEC = importlib.util.spec_from_file_location("extract_curves", ROOT / "extract_curves.py")
 curves = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(curves)
 
@@ -212,7 +215,7 @@ class ExtractionTests(unittest.TestCase):
             self.assertEqual(len(manifest["source_sha256"]), 64)
             self.assertEqual(len(manifest["calibration_sha256"]), 64)
             self.assertEqual(manifest["rendering"]["dpi"], 144)
-            self.assertEqual(set(manifest["outputs"]), {"signal", "panel", "validation", "extracted"})
+            self.assertEqual(set(manifest["outputs"]), {"signal", "panel", "validation", "extracted", "comparison"})
             self.assertEqual(manifest["outputs"]["signal"]["sha256"],
                              hashlib.sha256(Path(f"{prefix}_signal.csv").read_bytes()).hexdigest())
             for key in ("panel", "validation", "extracted"):

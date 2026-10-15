@@ -1,0 +1,58 @@
+{
+  "image": "raster_sample.png",
+  "panel": [
+    40,
+    30,
+    380,
+    250
+  ],
+  "source_clip": [
+    0,
+    0,
+    420,
+    300
+  ],
+  "x_axis": {
+    "scale": "linear",
+    "limits": [
+      0,
+      100
+    ]
+  },
+  "y_axis": {
+    "scale": "linear",
+    "limits": [
+      0,
+      10
+    ]
+  },
+  "series": [
+    {
+      "name": "blue",
+      "color": [
+        0.12549019607843137,
+        0.39215686274509803,
+        0.7843137254901961
+      ]
+    },
+    {
+      "name": "red",
+      "color": [
+        0.8235294117647058,
+        0.2549019607843137,
+        0.1568627450980392
+      ]
+    }
+  ],
+  "color_tolerance": 0.01,
+  "white_mixture_min": 1,
+  "exclude_rects": [
+    [
+      250,
+      45,
+      330,
+      65
+    ]
+  ],
+  "output_prefix": "../outputs/raster"
+}

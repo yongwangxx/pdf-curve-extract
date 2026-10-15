@@ -3,3 +3,5 @@ __pycache__/
 .DS_Store
 outputs/
 examples/sample.pdf
+examples/marker_sample.pdf
+examples/raster_sample.png

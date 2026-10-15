@@ -1,0 +1,35 @@
+{
+  "pdf": "marker_sample.pdf",
+  "page": 1,
+  "panel": [40, 40, 280, 200],
+  "source_clip": [0, 10, 310, 250],
+  "x_axis": {"scale": "log", "limits": [1, 1000]},
+  "y_axis": {"scale": "log", "limits": [0.01, 100]},
+  "series": [
+    {
+      "name": "square",
+      "color": [0, 0, 1],
+      "marker_shape": "square",
+      "marker_path_indices": [0],
+      "lower_cap_path_indices": [1],
+      "upper_cap_path_indices": [2]
+    },
+    {
+      "name": "ring",
+      "color": [0.8, 0, 0],
+      "marker_shape": "circle",
+      "marker_path_indices": [3],
+      "lower_cap_path_indices": [4],
+      "upper_cap_path_indices": [5]
+    },
+    {
+      "name": "cross",
+      "color": [0, 0.5, 0],
+      "marker_shape": "cross",
+      "marker_path_indices": [6]
+    }
+  ],
+  "marker_tolerance": 0.02,
+  "dpi": 200,
+  "output_prefix": "../outputs/markers"
+}

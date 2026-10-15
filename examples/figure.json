@@ -2,6 +2,7 @@
   "pdf": "sample.pdf",
   "page": 1,
   "panel": [60, 40, 420, 280],
+  "source_clip": [25, 25, 440, 325],
   "x_axis": {"scale": "linear", "limits": [0, 10]},
   "y_axis": {"scale": "linear", "limits": [0, 1]},
   "series": [{"name": "response", "color": [0.0, 0.3, 0.8]}],

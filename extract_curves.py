@@ -19,9 +19,15 @@ class ExtractionError(ValueError):
 
 
 def finite_number(value, label):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ExtractionError(f"{label} must be a finite number")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        raise ExtractionError(f"{label} must be a finite number") from None
+    if not math.isfinite(number):
+        raise ExtractionError(f"{label} must be a finite number")
+    return number
 
 
 def rectangle(values, label):
@@ -36,15 +42,48 @@ def rectangle(values, label):
 def axis_config(value, label):
     if not isinstance(value, dict) or value.get("scale") not in ("linear", "log"):
         raise ExtractionError(f"{label}.scale must explicitly be linear or log")
-    limits = value.get("limits")
-    if not isinstance(limits, (list, tuple)) or len(limits) != 2:
-        raise ExtractionError(f"{label}.limits must contain two values")
-    limits = [finite_number(v, label) for v in limits]
-    if limits[0] == limits[1]:
-        raise ExtractionError(f"{label}.limits must differ")
-    if value["scale"] == "log" and min(limits) <= 0:
-        raise ExtractionError(f"{label}: logarithmic limits must be positive")
-    return {"scale": value["scale"], "limits": limits}
+    if ("limits" in value) == ("anchors" in value):
+        raise ExtractionError(f"{label} must specify exactly one of limits or anchors")
+    out = {"scale": value["scale"]}
+    if "limits" in value:
+        limits = value["limits"]
+        if not isinstance(limits, (list, tuple)) or len(limits) != 2:
+            raise ExtractionError(f"{label}.limits must contain two values")
+        out["limits"] = [finite_number(v, label) for v in limits]
+        values = out["limits"]
+    else:
+        anchors = coordinate_values(value["anchors"], f"{label}.anchors")
+        if len(anchors) != 2:
+            raise ExtractionError(f"{label}.anchors must contain exactly two coordinate/value pairs")
+        if anchors[0][0] == anchors[1][0]:
+            raise ExtractionError(f"{label}.anchor coordinates must differ")
+        if not math.isfinite(anchors[1][0] - anchors[0][0]):
+            raise ExtractionError(f"{label}.anchor coordinate span is too large")
+        out["anchors"] = anchors
+        values = [pair[1] for pair in anchors]
+    if values[0] == values[1]:
+        raise ExtractionError(f"{label}.calibration values must differ")
+    if value["scale"] == "log" and min(values) <= 0:
+        raise ExtractionError(f"{label}: logarithmic calibration values must be positive")
+    transformed = [math.log(v) if value["scale"] == "log" else v for v in values]
+    if transformed[0] == transformed[1] or not math.isfinite(transformed[1] - transformed[0]):
+        raise ExtractionError(f"{label}.calibration span cannot be represented reliably")
+    if "check_ticks" in value:
+        out["check_ticks"] = coordinate_values(value["check_ticks"], f"{label}.check_ticks")
+        if value["scale"] == "log" and any(pair[1] <= 0 for pair in out["check_ticks"]):
+            raise ExtractionError(f"{label}: logarithmic check tick values must be positive")
+    return out
+
+
+def coordinate_values(value, label):
+    if not isinstance(value, (list, tuple)):
+        raise ExtractionError(f"{label} must contain coordinate/value pairs")
+    pairs = []
+    for pair in value:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ExtractionError(f"{label} must contain coordinate/value pairs")
+        pairs.append([finite_number(v, label) for v in pair])
+    return pairs
 
 
 def validate_config(config):
@@ -52,6 +91,12 @@ def validate_config(config):
         raise ExtractionError("configuration must be a JSON object")
     out = dict(config)
     out["panel"] = rectangle(config.get("panel"), "panel")
+    if "source_clip" in config:
+        out["source_clip"] = rectangle(config["source_clip"], "source_clip")
+        left, top, right, bottom = out["panel"]
+        clip = out["source_clip"]
+        if not (clip[0] <= left and clip[1] <= top and clip[2] >= right and clip[3] >= bottom):
+            raise ExtractionError("source_clip must contain the calibrated panel")
     for axis in ("x_axis", "y_axis"):
         out[axis] = axis_config(config.get(axis), axis)
     page = config.get("page")
@@ -98,6 +143,8 @@ def validate_config(config):
                     any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in indices)):
                 raise ExtractionError("path_indices must be a nonempty list of nonnegative integers")
         out["series"].append(item)
+    # Resolve edge extrapolation and tick diagnostics before creating any output.
+    calibration_diagnostics(out)
     return out
 
 
@@ -107,15 +154,76 @@ def axis_value(fraction, axis):
         return low
     if fraction == 1:
         return high
-    if axis["scale"] == "log":
-        return math.exp(math.log(low) + fraction * (math.log(high) - math.log(low)))
-    return low + fraction * (high - low)
+    try:
+        if axis["scale"] == "log":
+            result = math.exp(math.log(low) + fraction * (math.log(high) - math.log(low)))
+        else:
+            result = low + fraction * (high - low)
+    except OverflowError:
+        raise ExtractionError("axis calibration produces an unrepresentable value") from None
+    if not math.isfinite(result) or (axis["scale"] == "log" and result <= 0):
+        raise ExtractionError("axis calibration produces an unrepresentable value")
+    return result
+
+
+def axis_anchors(config, axis_name):
+    """Return coordinate/value pairs; y coordinates increase down the source."""
+    axis = config[f"{axis_name}_axis"]
+    if "anchors" in axis:
+        return axis["anchors"]
+    left, top, right, bottom = config["panel"]
+    start, end = (left, right) if axis_name == "x" else (bottom, top)
+    return [[start, axis["limits"][0]], [end, axis["limits"][1]]]
+
+
+def calibrated_value(coordinate, config, axis_name):
+    first, last = axis_anchors(config, axis_name)
+    fraction = (coordinate - first[0]) / (last[0] - first[0])
+    return axis_value(fraction, {"scale": config[f"{axis_name}_axis"]["scale"],
+                                 "limits": [first[1], last[1]]})
+
+
+def axis_limits(config, axis_name):
+    """Values at panel edges, in the order expected by a plotting library."""
+    left, top, right, bottom = config["panel"]
+    edges = (left, right) if axis_name == "x" else (bottom, top)
+    return [calibrated_value(coordinate, config, axis_name) for coordinate in edges]
+
+
+def calibration_diagnostics(config):
+    """Report independent tick residuals without assigning an accuracy threshold."""
+    diagnostics = {}
+    for name in ("x", "y"):
+        axis = config[f"{name}_axis"]
+        first, last = axis_anchors(config, name)
+        transform = math.log if axis["scale"] == "log" else lambda v: v
+        start, end = transform(first[1]), transform(last[1])
+        ticks = []
+        for coordinate, value in axis.get("check_ticks", []):
+            predicted = calibrated_value(coordinate, config, name)
+            expected_coordinate = first[0] + ((transform(value) - start) / (end - start)) * (last[0] - first[0])
+            residuals = {"coordinate": coordinate, "value": value, "predicted_value": predicted,
+                         "value_residual": predicted - value,
+                         "transformed_value_residual": transform(predicted) - transform(value),
+                         "coordinate_residual": coordinate - expected_coordinate}
+            if not all(math.isfinite(v) for v in residuals.values()):
+                raise ExtractionError("check tick residual cannot be represented reliably")
+            ticks.append(residuals)
+        diagnostics[f"{name}_axis"] = {
+            "method": "tick_anchors" if "anchors" in axis else "panel_limits",
+            "panel_edge_values": axis_limits(config, name), "check_tick_count": len(ticks),
+            "check_ticks": ticks,
+            "max_abs_coordinate_residual": max((abs(t["coordinate_residual"]) for t in ticks), default=None),
+            "max_abs_value_residual": max((abs(t["value_residual"]) for t in ticks), default=None),
+            "transformed_value_units": "natural_log" if axis["scale"] == "log" else "data_units",
+            "coordinate_units": "source_coordinate_units",
+            "residual_definition": "predicted minus labeled value; observed minus predicted coordinate",
+            "assessment": "not_assigned"}
+    return diagnostics
 
 
 def data_point(point, config):
-    left, top, right, bottom = config["panel"]
-    return (axis_value((point[0] - left) / (right - left), config["x_axis"]),
-            axis_value((bottom - point[1]) / (bottom - top), config["y_axis"]))
+    return (calibrated_value(point[0], config, "x"), calibrated_value(point[1], config, "y"))
 
 
 def same_point(a, b):
@@ -254,14 +362,25 @@ def get_drawings(page):
     return page.get_drawings(extended=True)
 
 
-def extract(page, config):
-    drawings = get_drawings(page)
+def validate_page_regions(page, config):
+    """Validate data bounds and the optional, wider preview in PDF points."""
     page_rect = tuple(page.rect)
+    for name in ("panel", "source_clip"):
+        if name not in config:
+            continue
+        rect = config[name]
+        if not (page_rect[0] <= rect[0] < rect[2] <= page_rect[2] and
+                page_rect[1] <= rect[1] < rect[3] <= page_rect[3]):
+            raise ExtractionError(f"{name} lies outside the page")
+
+
+def extract(page, config, diagnostics=None):
+    drawings = get_drawings(page)
+    validate_page_regions(page, config)
     panel = config["panel"]
-    if not (page_rect[0] <= panel[0] < panel[2] <= page_rect[2] and
-            page_rect[1] <= panel[1] < panel[3] <= page_rect[3]):
-        raise ExtractionError("panel lies outside the page")
     result = {s["name"]: [] for s in config["series"]}
+    mask_stats = {s["name"]: {"affected_path_indices": set(), "affected_input_segments": 0,
+                              "removed_length_source_units": 0.0} for s in config["series"]}
     active_clips = {}
     warnings = []
     for index, drawing in enumerate(drawings):
@@ -292,20 +411,46 @@ def extract(page, config):
             if bounds is None or rect.x1 < bounds[0] or rect.x0 > bounds[2] or rect.y1 < bounds[1] or rect.y0 > bounds[3]:
                 continue
         for chain in path_polylines(drawing, config["curve_tolerance"]):
-            for points in clip_polyline(chain, bounds, config["exclude_rects"]):
+            clipped = clip_polyline(chain, bounds, [])
+            retained = clip_polyline(chain, bounds, config["exclude_rects"])
+            if config["exclude_rects"]:
+                length = lambda segments: math.fsum(math.dist(a, b) for points in segments
+                                                    for a, b in zip(points, points[1:]))
+                removed = length(clipped) - length(retained)
+                if removed > 1e-8:
+                    stats = mask_stats[series["name"]]
+                    stats["affected_path_indices"].add(index)
+                    stats["affected_input_segments"] += 1
+                    stats["removed_length_source_units"] += removed
+            for points in retained:
                 result[series["name"]].append({"path_index": index,
                                                "stroke_style": stroke_style(drawing), "points": points})
     missing = [name for name, segments in result.items() if not segments]
     if missing:
-        raise ExtractionError("no retained strokes for series: " + ", ".join(missing))
+        erased = [name for name in missing if mask_stats[name]["affected_path_indices"]]
+        detail = "; exclusions removed selected geometry for: " + ", ".join(erased) if erased else ""
+        raise ExtractionError("no retained strokes for series: " + ", ".join(missing) + detail)
     for name, segments in result.items():
         paths = {s["path_index"] for s in segments}
         if len(paths) > 1:
             warnings.append(f"{name}: {len(paths)} source paths retained separately; their union is not a mean curve")
+        stats = mask_stats[name]
+        stats["affected_path_indices"] = sorted(stats["affected_path_indices"])
+        stats["affected_path_count"] = len(stats["affected_path_indices"])
+        if stats["affected_path_count"]:
+            warnings.append(f"{name}: exclusions affected {stats['affected_path_count']} selected paths / "
+                            f"{stats['affected_input_segments']} input segments and removed "
+                            f"{stats['removed_length_source_units']:.6g} PDF points of flattened stroke length; "
+                            "inspect masks for clipped curve tips or other real data")
+    if diagnostics is not None:
+        diagnostics["exclusions"] = {"series": mask_stats,
+                                     "length_units": "PDF_points",
+                                     "length_definition": "flattened stroke length inside panel and native clips",
+                                     "assessment": "not_assigned"}
     return result, warnings
 
 
-def safe_manifest(config, source_bytes, extracted, warnings):
+def safe_manifest(config, source_bytes, extracted, warnings, diagnostics=None):
     # Whitelist numerical calibration. Never serialize runtime paths or arbitrary labels.
     calibration = {key: config[key] for key in ("page", "panel", "x_axis", "y_axis",
                     "exclude_rects", "color_tolerance", "curve_tolerance")}
@@ -319,40 +464,57 @@ def safe_manifest(config, source_bytes, extracted, warnings):
                            "path_indices": sorted({s["path_index"] for s in segments}),
                            "x_range": [min(p[0] for p in values), max(p[0] for p in values)],
                            "y_range": [min(p[1] for p in values), max(p[1] for p in values)]}
-    return {"schema_version": 1, "extractor_version": "2.0.0",
+    manifest = {"schema_version": 1, "extractor_version": "2.1.0",
             "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
             "calibration_sha256": hashlib.sha256(calibration_bytes).hexdigest(),
-            "calibration": calibration, "series": summaries, "warnings": warnings,
+            "calibration": calibration, "calibration_diagnostics": calibration_diagnostics(config),
+            "series": summaries, "warnings": warnings,
             "review_status": "pending_manual_review", "fitting_applied": False,
             "point_interpretation": "PDF stroke vertices; cubic strokes adaptively flattened in PDF coordinates",
             "limitations": ["No raster, marker, occlusion, or scientific-claim verification",
                             "Same-color source paths may represent different physical curves"],
-            "rendering": {"dpi": config["dpi"]}, "pymupdf_version": fitz.VersionBind}
+            "rendering": {"dpi": config["dpi"], "source_clip": config.get("source_clip", config["panel"]),
+                          "source_clip_units": "PDF_points"}, "pymupdf_version": fitz.VersionBind}
+    if diagnostics is not None and "exclusions" in diagnostics:
+        exclusions = diagnostics["exclusions"]
+        # Do not copy arbitrary caller data or runtime locations into the manifest.
+        manifest["exclusion_diagnostics"] = {
+            "series": {name: {key: stats[key] for key in (
+                "affected_path_indices", "affected_path_count", "affected_input_segments",
+                "removed_length_source_units")} for name, stats in exclusions["series"].items()},
+            "length_units": "PDF_points",
+            "length_definition": "flattened stroke length inside panel and native clips",
+            "assessment": "not_assigned"}
+    return manifest
 
 
 def output_paths(prefix, config):
     prefix = str(prefix)
     paths = {s["name"]: Path(f"{prefix}_{s['name']}.csv") for s in config["series"]}
     paths.update({key: Path(f"{prefix}_{key}.{ext}") for key, ext in
-                  (("panel", "png"), ("validation", "png"), ("extracted", "png"), ("manifest", "json"))})
+                  (("panel", "png"), ("validation", "png"), ("extracted", "png"),
+                   ("comparison", "png"), ("manifest", "json"))})
     return paths
 
 
-def write_outputs(page, config, extracted, source_bytes, prefix, warnings):
+def write_outputs(page, config, extracted, source_bytes, prefix, warnings, diagnostics=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from PIL import Image, ImageDraw
+    from review_images import save_comparison
 
+    validate_page_regions(page, config)
     paths = output_paths(prefix, config)
-    if len(paths) != len(config["series"]) + 4:
+    if len(paths) != len(config["series"]) + 5:
         raise ExtractionError("series name conflicts with an output name")
     if any(path.exists() for path in paths.values()):
         raise ExtractionError("output already exists; choose a new output_prefix to preserve the previous extraction")
     for path in paths.values():
         path.parent.mkdir(parents=True, exist_ok=True)
     scale = config["dpi"] / 72
-    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=fitz.Rect(config["panel"]), alpha=False,
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale),
+                         clip=fitz.Rect(config.get("source_clip", config["panel"])), alpha=False,
                          colorspace=fitz.csRGB)
     panel_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     overlay = panel_image.copy()
@@ -375,7 +537,7 @@ def write_outputs(page, config, extracted, source_bytes, prefix, warnings):
                           fill=(255, 0, 200), width=max(1, round(scale*0.6)))
     for axis in ("x", "y"):
         getattr(ax, f"set_{axis}scale")(config[f"{axis}_axis"]["scale"])
-        getattr(ax, f"set_{axis}lim")(*config[f"{axis}_axis"]["limits"])
+        getattr(ax, f"set_{axis}lim")(*axis_limits(config, axis))
         getattr(ax, f"set_{axis}label")(axis)
     ax.legend()
     ax.set_title("Extracted strokes (separate segments retained)")
@@ -384,7 +546,8 @@ def write_outputs(page, config, extracted, source_bytes, prefix, warnings):
     plt.close(fig)
     panel_image.save(paths["panel"])
     overlay.save(paths["validation"])
-    manifest = safe_manifest(config, source_bytes, extracted, warnings)
+    save_comparison(paths["panel"], paths["extracted"], paths["comparison"])
+    manifest = safe_manifest(config, source_bytes, extracted, warnings, diagnostics)
     # Logical output IDs avoid copying the caller's directory names into shared records.
     manifest["outputs"] = {key: {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                            for key, path in paths.items() if key != "manifest"}
@@ -394,10 +557,23 @@ def write_outputs(page, config, extracted, source_bytes, prefix, warnings):
 
 def inventory(page):
     rows = []
+    active_clips = {}
     for index, d in enumerate(get_drawings(page)):
-        if d.get("color") is not None:
-            rows.append({"path_index": index, "color": d["color"], "stroke_style": stroke_style(d),
-                         "bounds": list(d["rect"]), "primitives": sorted({i[0] for i in d["items"]})})
+        level = d.get("level", 0)
+        active_clips = {k: v for k, v in active_clips.items() if k < level}
+        if d["type"] == "clip":
+            items = d["items"]
+            active_clips[level] = list(items[0][1]) if len(items) == 1 and items[0][0] == "re" else None
+            continue
+        if d["type"] == "group":
+            continue
+        if d.get("color") is not None or d.get("fill") is not None:
+            rows.append({"path_index": index, "color": d.get("color"), "stroke_style": stroke_style(d),
+                         "fill": d.get("fill"), "type": d["type"],
+                         "bounds": list(d["rect"]), "primitives": sorted({i[0] for i in d["items"]}),
+                         "native_clips": list(active_clips.values()),
+                         "native_clip_status": ("nonrectangular" if None in active_clips.values()
+                                                else "rectangular" if active_clips else "none")})
     return rows
 
 
@@ -432,8 +608,9 @@ def main(argv=None):
                 raise ExtractionError("use page in the config for extraction; --page is inventory-only")
             config = validate_config(config)
             prefix = args.output_prefix or (base / config.get("output_prefix", "extracted"))
-            extracted, warnings = extract(page, config)
-            manifest = write_outputs(page, config, extracted, source_bytes, prefix, warnings)
+            diagnostics = {}
+            extracted, warnings = extract(page, config, diagnostics)
+            manifest = write_outputs(page, config, extracted, source_bytes, prefix, warnings, diagnostics)
             for name, summary in manifest["series"].items():
                 print(f"{name}: {summary['segment_count']} segments, {summary['point_count']} points")
             for warning in warnings:
