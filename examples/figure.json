@@ -1,0 +1,13 @@
+{
+  "pdf": "sample.pdf",
+  "page": 1,
+  "panel": [60, 40, 420, 280],
+  "x_axis": {"scale": "linear", "limits": [0, 10]},
+  "y_axis": {"scale": "linear", "limits": [0, 1]},
+  "series": [{"name": "response", "color": [0.0, 0.3, 0.8]}],
+  "exclude_rects": [[75, 50, 140, 68]],
+  "color_tolerance": 0.02,
+  "curve_tolerance": 0.05,
+  "dpi": 200,
+  "output_prefix": "../outputs/example"
+}
